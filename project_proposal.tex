@@ -1,0 +1,298 @@
+%% ============================================
+%% ================ Preambule =================
+%% ============================================
+\documentclass[]{scrartcl}
+\usepackage[margin = 0.5in]{geometry}
+
+\usepackage[pdftex,unicode, 
+colorlinks=true,
+linkcolor = blue]{hyperref}	% нумерование страниц, ссылки!!!!ИМЕННО В ТАКОМ ПОРЯДКЕ СО СЛЕДУЮЩИМ ПАКЕТОМ
+%\usepackage[warn]{mathtext}				% Поддержка русского текста в формулах
+\usepackage[T1, T2A]{fontenc}			% Пакет выбора кодировки и шрифтов
+\usepackage[utf8]{inputenc} 			% любая желаемая кодировка
+\usepackage[english]{babel}		% поддержка русского языка
+\usepackage{wrapfig}					% Плавающие картинки
+\usepackage{amssymb, amsmath}			% стилевой пакет для формул
+\usepackage{algorithm}
+\usepackage{algorithmic} 
+\usepackage{natbib}
+%\bibliographystyle{plainnat}
+
+\ifpdf
+\usepackage{cmap} 				% чтобы работал поиск по PDF
+\usepackage[pdftex]{graphicx}
+\usepackage{pgfplotstable}		% Для вставки таблиц.
+\pdfcompresslevel=9 			% сжимать PDF
+\else
+\usepackage{graphicx}
+\fi
+
+\graphicspath{{./figures/}}
+\usepackage{subcaption}
+%% ============================================
+%% ================ Info =================
+%% ============================================
+\title{Адаптивный стохастический градиентный спуск}
+\author{\begin{tabular}{c c}
+	  	 Евгений Лагутин & Daniil Merkulov \\
+		 \texttt{lagutin.em@phystech.edu} & \texttt{daniil.merkulov@skoltech.ru} 
+		\end{tabular}}
+\date{Project Proposal}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Проект подразумевает реализацию метода адаптивного стохастического спуска, который можно рассматривать как модификацию универсального градиентного спуска (в смысле схожести подбора константы Липшица градиента (\cite{gas}). Предполагается, что метод имеет хорошее качество на практике, однако подтвердить это теоретически пока не удалось. 
+\end{abstract}
+
+\section{Идея}
+Конструкция минибатчинга позволяет переносить оптимальные
+методы на задачи стохастической оптимизации с сохранением свойства
+оптимальности и получать оптимальные методы для задач стохастической
+оптимизации из неоптимальных методов для детерминированных задач. Также в большинстве приложений нельзя сделать предположений о конкретных свойствах функций, таких как значения константы Липшица градиента и дисперсии градиента. Поэтому используются адаптивные стохастические методы. В данном проекте реализуется один из таких методов. Хотя оптимальность данного метода пока не доказана, хочется проверить, насколько хорошо он работает на практике. Задача состоит в том, чтобы проверить качество метода на различных классах функций и сравнить с качеством работы существующих методов (выявив, таким образом, для каких классов метод может оказаться оптимальным). Основной упор предлагается сделать в исследовании качества работы метода на функциях вида суммы большого числа функционалов, часто возникающих в задач машинного обучения и глубокого обучения. Для таких функций конструкция стохастического усреднения легко переносится на конструкцию рандомизации суммы (\cite{gas2016stoch}), позволяя очевидным образом применить стратегию минибатчинга, резко улучшающую качество метода за счёт распараллеливания вычислений. 
+
+\subsection{Problem}
+Рассмотрим следующую задачу выпуклой оптимизации:
+
+Вместо градидиента $\nabla f(x)$ оракул выдает его несмещённую оценку $\nabla_x f(x, \xi)$ c конечной дисперсией.
+
+\begin{equation}
+\mathbb{E}_{\xi}[\nabla_xf(x, \xi)] \equiv \nabla f(x),~\mathbb{E}[\|\nabla_x f(x,\xi)-\nabla f(x)\|_2^2] < D
+\end{equation}
+
+Конструкция минибатчинга в общем представлении:
+\begin{equation}
+\overset{r}{\nabla_x}f(x, \{\xi^l\}_{l=1}^r) = \frac{1}{r}\sum\limits_{l=1}^r \nabla_x f(x, \xi^l)
+\end{equation}
+
+В \cite{gas} показано, что для выпуклых функций, обладающих липшецевым градиентом, т.е. таких, что $|\nabla f(x) - \nabla f(y)| \le L\|x-y\|_2$, справедлива следующая оценка на количество обращений к оракулу при не малых $D$ будет 
+
+\begin{equation}
+N(\varepsilon) = O\left(\frac{DR^2}{\varepsilon^2}\right),
+\end{equation}
+
+причём эта оценка остаётся верной и для ускоренных методов и не является улучшаемой \cite{agarwal2009information}. 
+
+Для сильно выпуклого случая данную оценку можно улучшить при помощи конструкции рестартов. В результате получим неулучшаемую оценку для сильно выпуклого случая:
+
+\begin{equation}
+N(\varepsilon) = O\left(\min\left\{\frac{DR^2}{\varepsilon^2}, \frac{D}{\mu \varepsilon}\right\}\right),
+\end{equation}
+
+В случае, когда неизвестны значения $L$ и $D$ (считая при этом, что сделанные выше предположения выполнены), используется адаптивный метод подбора константы $L$. 
+
+В данной работе предлагается исследовать следующий адаптивный алгоритм:
+
+\begin{algorithm}[h!]
+	\caption{Adaptive Stochastic Gradient Method (Spokoiny's practical variant)}
+	\hspace*{\algorithmicindent} \textbf{Input}: lower estimate for the variance of the gradient $D_0 \le D$,\\ accuracy $0 < \varepsilon< \frac{D_0}{L}$, starting point $x_0 \in Q$, initial guess $L_{-1} > 0$
+	\label{RKalg}
+	\begin{algorithmic}[1] 
+		\FOR {$k=0,1,...$}
+		\STATE Set $i_k=0$. Set $r^k = \lceil \frac{2 D_0}{L_{k-1}} {\varepsilon}\rceil$, generate i.i.d. $\xi^i_K, ~i = 1,\dots, r^k$
+	    \REPEAT
+		\STATE Set $L_k = 2 ^{i_k-1}L_{k-1}$
+		\\
+		\STATE Calculate $\tilde{g}(x_k) = \frac{1}{r^k}\sum_{i=1}^{r^k}\nabla f(x_k, \xi^i_k)$.
+		\\
+		\STATE Calculate $w_k = x_k - \frac{1}{2 L_k}\tilde{g}(x_k)$.
+		\\
+		\STATE Calculate $\tilde{f}(x_k) = \frac{1}{r_k}\sum_{i=1}^{r^k}f(x_k, \xi^i_k)$ and\\ $\tilde{f}(w_k) = \frac{1}{r^k}\sum_{i=1}^{r^k}f(w_k, \xi^i_k)$.
+		\\
+		\STATE Set $i_k = i_k + 1$.
+		\UNTIL \\$~~~~\tilde{f}(w_k) \le \tilde{f}(x_k) + \langle\tilde{g}(x_k), w_k - x_k\rangle + \frac{2 L_k}{2}\|w_k - x_k\|_2^2 + \frac{\epsilon}{10}$.
+		\STATE Set $x_{k+1} = w_k,~k=k+1$.
+		\ENDFOR
+	\end{algorithmic}
+\end{algorithm}
+
+Заметим, что практический вариант отличается от теоретического тем, что один и тот же набор случайных величин используется для подсчёта градиента для шага и для подсчёта значений функции для проверки удовлетворения $L_k$ условию перехода к следующему шагу.
+
+К сожалению, пока нет предположений о конкретных классах задач, где метод имеет лучшее качество, поэтому предлагается провести численное исследование. В частности, проверить качество метода на следующем виде задач.
+
+Во многих задачах функционал имеет вид:
+\begin{equation}
+\frac{1}{m}\sum\limits_{i=1}^m f(x_i) \rightarrow  \underset{x \in Q}{\min}
+\end{equation}
+
+Если $m$ - большое число, равновероятно генерируется набор $r$ слагаемых $\{\xi^l\}_{l=1}^r$, вычисляется следующая  оценка градиента:
+
+\begin{equation}
+\nabla f(x, \{\xi^l\}_{l=1}^r) = \frac{1}{r}\sum\limits_{l=1}^r\nabla f_{\xi^l}(x).
+\end{equation}
+
+Такой подход называется рандомизацией суммы.
+
+С другой стороны, эту конструкцию можно рассматривать как минибатчинг. 
+
+\begin{equation}
+f(x) = \mathbb{E}_{\xi}[f(x, \xi)] \rightarrow \underset{x\in Q}\min,~~f(x,\xi) = f_{\xi}(x),~~\nabla_x f(x,\xi) = \nabla f_{\xi}(x),\end{equation}
+$$P(\xi = l) = \frac{1}{m},~l=1,\dots,m.$$
+
+	 
+\section{Outcomes}
+Как уже было отмечено выше, результатом проекта будет реализация предложенного метода, а также набор численных экспериментов. Качество метода будет проверено на различных классах функций (невыпуклых, выпуклых, сильно выпуклых). Так для сильно выпуклого случая можно реализовать конструкцию рестартов, позволяющую переносить оптимальные оценки с выпуклого случая. Особое внимание будет уделено проверке метода на задачах машинного обучения и глубокого обучения (логистическая регрессия, двухслойная нейронная сеть на классических датасетах \texttt{MNIST}, \texttt{CIFAR10} и т.п.). Для таких функций градиенты будем вычислять параллельно. Также итогом будет сравнение с другими методами адаптивного стохастического градиентного спуска. Среди таких методов - различные варианты метода AdaGrad, Adam. 
+
+В работах, описанных ниже, помимо предложенных методов, оценок, теорем и прочего, есть описания численных экспериментов по проверке качества методов. Эта же техника будет использована мною для проверки качества предложенного метода. Будет выбран набор классических мировых датасетов (\texttt{MNIST}, \texttt{CIFAR10}, \texttt{IMDB}) и различные логистические модели: логистическая регрессия, полносвязная нейросеть, конволюционная нейросеть. Далее наша модель будет сравниваться c другими адаптивными стохастическими градиентными методами (AdaGrad, Adam, их вариации). Сравнение может происходить по следующим критериям: скользящее среднее функции потерь, скользящая точность, точность после 1 эпохи, точность после нескольких эпох.
+
+В качестве примера можно привести график из работы \cite{deng2018optimal}:
+
+\begin{figure}[H]
+	\centering
+	\includegraphics[width=0.7\linewidth]{figures/ris}
+	\caption[Figure 1:]{Comparison of algorithm performance on convex and nonconvex models. From left to right, each column represents the training loss, training accuracy and test accuracy. The first and second row plot the experimental results for logistic regression and neural network on the MNIST dataset respectively. The third and fourth rows plot the results for Cifarnet and Vgg16 on CIFAR10 respectively}
+	\label{fig:ris}
+\end{figure}
+
+\section{Литературный обзор}
+\begin{enumerate}
+	\item \textbf{А.В. Гасников. Современные численные методы оптимизации. Метод универсального градиентного спуска. 2018 \cite{gas}}
+
+Это основной источник, в котором адаптивный стохастический градиентный спуск рассматривается как модификация универсального градиентного спуска, приведены оценки на скорость сходимости для стохастического градиента с известными параметрами $L,~D$ для выпуклых и сильно выпуклых функций. Также в \cite{gas} описаны преимущества концепции минибатчинга в задачах минимизации суммы функций.
+
+В данном пособии показано, что оптимальные оценки для детерминированных методов переносятся на стохастический случай, однако это может быть не выполнено для адаптивных методов. В частности, хотелось бы перенести качество работы универсального градиентного спуска на стохастический случай, но этого сделать не удаётся.
+
+Похожие рассуждения можно провести и для зеркального спуска, реализовав его стохастический вариант, однако это выходит за рамки программы минимум данного проекта. 
+
+	\item \textbf{Alekh Agarwal, Martin J Wainwright, Peter L Bartlett, and Pradeep K Ravikumar. Information-theoretic
+		lower bounds on the oracle complexity of convex optimization. 2009 \cite{agarwal2009information}}
+	
+	
+В работе показано, что оценки, приведённые в \cite{gas}, являются неулучшаемыми на соответствующих классах. При этом, как показано в \cite{gas}, они достигаются на неоптимальных для детерминированного случая методах!
+
+	\item \textbf{John C Duchi. Introductory lectures on stochastic optimization. 2017 \cite{duchi2017introductory}}
+Это пособие написано автором метода AdaGrad, в своей работе он приводит одну из часто рассматриваемых вариаций метода: 
+
+\begin{equation}
+x_{k+1} = \underset{x\in Q}{\arg\!\min}\left\{\langle g_k,x\rangle + \frac{1}{2}\langle x, H_k x\rangle \right\} = \underset{x\in Q}{\arg\!\min}\left\{\|x-(x_k-H^{-1}_k g_k)\|^2_{H_k}\right\},
+\end{equation}
+\begin{equation}
+H_k = \frac{1}{\alpha}diag\left(\sum\limits_{i=1}^kg_i g_i^{\top}\right)^{1/2},
+\end{equation}
+$$\mathbb{E}[g_k|x_k] \in \partial f(x_k).$$
+
+Хотя этот метод не является оптимальным в общем случае, при некоторых начальных условиях гарантировано превосходит по качеству обычный стохастический градиентный спуск. Также метод AdaGrad хорошо работает с разреженными градиентами, о чём можно сделать вывод по приведённым в работе оценкам сходимости. Основные оценки скорости сходимости приведены в \cite{duchi2017introductory}. 
+
+	\item \textbf{Diederik P. Kingma, Jimmy Lei Ba. Adam: a method for stochastic optimization. 2014 \cite{kingma2014adam}}
+
+В качестве метода, с которым стоит сравнивать качество работы реализуемого метода обязательно должен быть выбран и метод Adam, стремительно завоевавший мировую популярность. Метод основывается на адаптивном вычислении первого и второго моментов. Привлекательность метода - в том что он требует малых вычислительных затрат и количества памяти. Более того, величина подбираемых параметров инвариантна к масштабированию градиента, метод также хорошо работает с разреженными градиентами.
+
+\begin{algorithm}[H]
+	\caption{Adam. $g_t^2$ означает поэлементное произведение $g_t\odot g_t$. Все векторные операции - поэлементные.}
+	\hspace*{\algorithmicindent} \textbf{Input}: $\alpha$ : Stepsize
+	\hspace*{\algorithmicindent} \textbf{Input}: $\beta_1,\beta_2 \in [0,1)$ :   Exponential decay rates for the moment estimates
+	\hspace*{\algorithmicindent} \textbf{Input}: $\theta_0$ : Initial parameter vector
+	%\label{RKalg}
+	\begin{algorithmic}[1] 
+		\STATE $m_0 = 0$ (Initialize $1^{st}$ moment vector)
+		\STATE $v_0 = 0$ (Initialize $2^{nd}$ moment vector)
+		\STATE $t = 0$ (Initialize timestep)
+		\WHILE {$\theta_t$ not converged}
+		\STATE $t=t+1 $
+		\STATE generate $\{\xi^l\}_{l=1}^r$
+		\STATE $g_t = \nabla_{\theta}f(\theta_t, \{\xi^l\}_{l=1}^r)$
+		\STATE $m_t = \beta_1 \cdot m_{t-1} + (1-\beta_1)\cdot g_t$
+		\STATE $v_t = \beta_2 \cdot v_{t-1} + (1-\beta_2)\cdot g_t^2$
+		\STATE $\hat{m}_t = m_t / (1-\beta_1^t)$
+		\STATE $\hat{v}_t = v_t / (1-\beta_2^t)$
+		\STATE $\theta_t = \theta_{t-1} - \alpha \cdot \hat{m}_t / (\sqrt{\hat{v}_t+\varepsilon})$
+		\ENDWHILE
+	\end{algorithmic}
+	\hspace*{\algorithmicindent} \textbf{Output}:  $\theta_t$
+\end{algorithm}
+
+В работе также приведены оценки на скорость сходимости. В качестве следствия из теоремы о сходимости метода присутствует утверждение, что отношение суммарной невязки к количеству функций, сумма которых минимизируется, стремится к нулю при увеличении количества функций. Это приятное следствие наталкивает на решение использовать это метод во многих задачах машинного обучения.
+
+\item \textbf{Qi Deng, Yi Cheng, and Guanghui Lan. Optimal adaptive and accelerated stochastic gradient descent. 2018 \cite{deng2018optimal}}
+
+В этой статье авторы уделили внимание различным вариациям метода AdaGrad. Самая базовая реализация может быть записана следующим образом:
+
+\begin{algorithm}[H]
+	\caption{AdaGrad}
+	\hspace*{\algorithmicindent} \textbf{Input}: $x_0,~v_{-1}$
+	%\label{RKalg}
+	\begin{algorithmic}[1] 
+		\FOR {$k=0,1,...,K$}
+		\STATE Generate $\xi_k$
+		\STATE Compute $G_k \in \nabla f(x_k, \xi_k)$
+		\STATE Set $v_k = v_{k-1} + G_k^2$
+		\STATE $x_{k+1} = x_k - \beta_k G_k / \sqrt{v_k}$
+		\ENDFOR
+	\end{algorithmic}
+	\hspace*{\algorithmicindent} \textbf{Output}:  $x_{K+1}$
+\end{algorithm}
+
+В статье приведена также намного более общая конструкция в терминах прокс-функций и дивергенции Брэгмана:
+
+\begin{algorithm}[H]
+	\caption{Adaptive accelerated stochastic gradient (A2Grad) algorithm}
+	\hspace*{\algorithmicindent} \textbf{Input}: $x_0,~\overline{x_0},~\gamma_k,~\beta_k>0$
+	%\label{RKalg}
+	\begin{algorithmic}[1] 
+		\FOR {$k=0,1,...,K$}
+		\STATE Update $$\underline{x_k} = (1-\alpha_k)\overline{x_k} + \alpha_k x_k$$
+		\STATE Sample $\xi_k$
+		\STATE Compute $\underline{G_k} \in \nabla f(\underline{x_k}, \xi_k)$
+	    \STATE Compute $\phi_k(.)$
+	    \STATE Update $$x_{k+1} = \underset{x \in Q}{\arg\!\min}{\langle \underline{G_k},x \rangle + \gamma_k D(x_k, x) + \beta_k D_{\phi_k}(x_k, x) }$$
+	     $$\overline{x_{k+1}} = (1-\alpha_k)\overline{x_k}+\alpha_kx_{k+1}$$
+		\ENDFOR
+	\end{algorithmic}
+	\hspace*{\algorithmicindent} \textbf{Output}:  $\overline{x_K}$
+\end{algorithm}
+
+$D(x,y) \equiv D_{\psi}(x,y)$ - дивергенция Брэгмана, где $\psi(x)$ - произвольная заранее выбранная выпуклая прокс-функция (в работе \cite{deng2018optimal} используется обычная Евклидова прокс-функция $\frac{1}{2}\|x\|^2$).
+
+$\phi(x)_k$ - прокс-функция, адаптивная по последнему посчитанному градиенту.
+
+В работе \cite{deng2018optimal} приведено целое семейство state-of-the-art вариаций метода AdaGrad, отличающихся выбором адаптивности прокс-функции $\phi_k$. 
+
+Рисунок  \ref{fig:ris} отображает результаты экспериментов по сравнению различных имплементаций адаптивного стохастического градиентного спуска (\cite{deng2018optimal}). 
+
+Видно, насколько в некоторых случаях предложенные вариации превосходят в качестве и стандартный метод AdaGrad и описанный выше метод Adam. 
+
+	\item \textbf{Yehuda KLr Levy, Alp Yurtsever, and Volkan Cevher. Online adaptive methods, universality and acceleration. 2018 \cite{levy2018online}}
+
+В работе доказана теорема о сходимости классического AdaGrad. При этом на функцию накладываются сильные ограничения: выпуклость и $\beta$-гладкость. Тогда, если оракул выдаёт зашумлённый градиент, то справедлив следующий результат: 
+\begin{equation}
+\mathbb{E}(f(\overline{x}_N)) - \underset{x\in \mathbb R^d}{\min}f(x) \le O\left(\frac{\beta R^2}{T}+\frac{D R}{\sqrt{T}}\right)
+\end{equation}
+
+	\item \textbf{J. Wright Stephen. Optimization algorithms for data analysis. 2016  \cite{wright2016}}
+		
+В пособии  описаны классические задачи машинного обучения в терминах оптимизации функций потерь.
+
+Например, для алгоритма логистической регрессии минимизируется минус логарифм функции правдоподобия:
+
+\begin{equation}
+L(X) := \frac{1}{m}\sum\limits_{j=1}^m\left[\sum_{l=1}^M y_{jl}(x^{\top}_{(l)}a_j) - \log \left(\sum_{l=1}^M \exp(x^{\top}_{(l)}a_j)\right)  \right].
+\end{equation}
+
+	\item \textbf{А.В. Гасников, П.Е. Двуреченский, Ю.Е. Нестеров. Стохастические градиентные методы с неточным оракулом. 2016 \cite{gas2016stoch}}
+
+В работе приведён обзор метода рандомизации суммы и приводятся оценки для негладких, гладких выпуклых и сильно выпуклых функций. Приведённые оценки сходимости, правда, отличаются от нижних оценок сходимости для детерминированных методов. Кроме того, ещё раз было  показано, как с помощью регуляризации оценки для сильно выпуклого случаю переносятся на выпуклый.
+
+	\item \textbf{Sebastian Ruder. An overview of gradient descent optimization algorithms. 2016 \cite{ruder2016overview}}
+	
+В этой популярной статье производится краткий обзор градиентных методов с точки зрения их реализации и соответствия различным задачам. В частности в статье уделено внимание градиентному спуску с минибатчингом, указаны основные нюансы, на которые стоит обращать внимание на практике. Стоит отметить, что под минибатчингом в статье понимается, что на одном шаге градиент считается по набору последовательных элементов тренировочной выборки, т.е. как это обычно бывает на практике. Автор также высказывает предположение о преимуществах минибатчинга при тренировке нейросетей, связывая это с "сильной негладкостью" минимизируемого функционала и, как следствие, наличие большого числа локальных оптимумов.
+  
+ 
+\end{enumerate}
+
+\section{Метрики качества}
+Так как проект заключается в том, чтобы проверить качество работы алгоритма с помощью различных численных экспериментов, все метрики качества были описаны в разделе \textbf{Outcomes}.
+
+
+\section{Примерный план}
+\begin{itemize}
+	\item Сначала будет реализован метод.
+	\item Потом его качество будет проверено на различных задачах, описанных выше (задачи машинного обучения, нейронные сети на датасетах \texttt{MNIST}, \texttt{CIFAR10}) в сравнении с другими  популярными адаптивными методами.
+	\item Также стоит задача проверить качество алгоритма на более узких классах задач.
+	\item Можно также проверить работу метода на более сложных моделях (глубоких нейросетях, конволюционных нейросетях). Кроме того можно реализвовать стохастический зеркальный спуск. 
+\end{itemize}
+\bibliographystyle{unsrt}
+\bibliography{biblio}
+
+\end{document}
